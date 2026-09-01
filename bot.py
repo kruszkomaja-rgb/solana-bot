@@ -1,118 +1,152 @@
 import os
 import re
 import discord
-from discord.ui import Button, View
+from discord.ui import Button, View, button
 import requests
+from datetime import datetime
 
-# Konfiguracja uprawnień bota
 intents = discord.Intents.default()
 intents.message_content = True
-
 client = discord.Client(intents=intents)
 
-# Wzór szukający adresów kontraktów Solany (32-44 znaki)
 SOL_CA_REGEX = r"\b[1-9A-HJ-NP-Za-km-z]{32,44}\b"
 
+# Stores entry Market Cap for each CA  →  { "contract": entry_mcap }
+entry_mcs = {}
+
+def get_token_data(ca: str):
+    try:
+        r = requests.get(f"https://api.dexscreener.com/latest/dex/tokens/{ca}", timeout=6)
+        data = r.json()
+        pairs = data.get("pairs")
+        if not pairs:
+            return None
+        pairs = sorted(pairs, key=lambda x: x.get("liquidity", {}).get("usd", 0), reverse=True)
+        return pairs[0]
+    except Exception as e:
+        print(f"API Error: {e}")
+        return None
+
+def format_number(num):
+    if not num:
+        return "$0"
+    if num >= 1_000_000:
+        return f"${num/1_000_000:.2f}M"
+    if num >= 1_000:
+        return f"${num/1_000:.1f}K"
+    return f"${num:,.0f}"
 
 class TokenView(View):
+    def __init__(self, ca: str, entry_mcap: float):
+        super().__init__(timeout=None)
+        self.ca = ca
+        self.entry_mcap = entry_mcap
 
-  def __init__(self, ca: str):
-    super().__init__(timeout=None)
-    self.add_item(
-        Button(
-            label="Chart",
-            url=f"https://dexscreener.com/solana/{ca}",
-            style=discord.ButtonStyle.link,
+        # Link buttons
+        self.add_item(Button(label="Chart", url=f"https://dexscreener.com/solana/{ca}", style=discord.ButtonStyle.link))
+        self.add_item(Button(label="GMGN", url=f"https://gmgn.ai/solana/token/{ca}", style=discord.ButtonStyle.link))
+        self.add_item(Button(label="Solscan", url=f"https://solscan.io/token/{ca}", style=discord.ButtonStyle.link))
+
+    @button(label="🔄 Refresh", style=discord.ButtonStyle.primary)
+    async def refresh_button(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.defer()
+
+        token = get_token_data(self.ca)
+        if not token:
+            await interaction.followup.send("Could not fetch data.", ephemeral=True)
+            return
+
+        base = token.get("baseToken", {})
+        name = base.get("name", "Unknown")
+        symbol = base.get("symbol", "???")
+        price = float(token.get("priceUsd") or 0)
+        mcap = token.get("marketCap") or token.get("fdv") or 0
+        liq = token.get("liquidity", {}).get("usd", 0)
+        change = token.get("priceChange", {})
+        h1 = change.get("h1", 0)
+        h24 = change.get("h24", 0)
+
+        # Calculate x multiplier
+        if self.entry_mcap and self.entry_mcap > 0:
+            multiplier = mcap / self.entry_mcap
+            x_text = f"**{multiplier:.2f}x**"
+        else:
+            x_text = "—"
+
+        h1_icon = "▲" if h1 >= 0 else "▼"
+        h24_icon = "▲" if h24 >= 0 else "▼"
+
+        text = (
+            f"**{name} ({symbol}) | SOLANA**\n"
+            f"┌─ Price: `${price:.8f}`\n"
+            f"├─ MCap: **{format_number(mcap)}**\n"
+            f"├─ Liquidity: {format_number(liq)}\n"
+            f"├─ 1h: {h1_icon} {abs(h1)}% · 24h: {h24_icon} {abs(h24)}%\n"
+            f"├─ From call: {x_text}\n"
+            f"└─ CA: `{self.ca}`"
         )
-    )
-    self.add_item(
-        Button(
-            label="GMGN",
-            url=f"https://gmgn.ai/solana/token/{ca}",
-            style=discord.ButtonStyle.link,
-        )
-    )
-    self.add_item(
-        Button(
-            label="Solscan",
-            url=f"https://solscan.io/token/{ca}",
-            style=discord.ButtonStyle.link,
-        )
-    )
 
-
-def pobierz_dane_tokena(ca: str):
-  url = f"https://api.dexscreener.com/latest/dex/tokens/{ca}"
-  try:
-    odpowiedz = requests.get(url, timeout=5)
-    dane = odpowiedz.json()
-    pary = dane.get("pairs")
-    if not pary:
-      return None
-    pary = sorted(
-        pary, key=lambda x: x.get("liquidity", {}).get("usd", 0), reverse=True
-    )
-    return pary[0]
-  except Exception as e:
-    print(f"Błąd API: {e}")
-    return None
-
+        await interaction.message.edit(content=text, view=self)
 
 @client.event
 async def on_ready():
-  print(f"Zalogowano jako {client.user}! Bot jest gotowy do działania.")
-
+    print(f"✅ Logged in as {client.user}")
 
 @client.event
 async def on_message(message):
-  if message.author == client.user:
-    return
+    if message.author.bot:
+        return
 
-  match = re.search(SOL_CA_REGEX, message.content)
-  if match:
+    match = re.search(SOL_CA_REGEX, message.content)
+    if not match:
+        return
+
     ca = match.group(0)
+    token = get_token_data(ca)
+    if not token:
+        return
 
-    token_info = pobierz_dane_tokena(ca)
-    if not token_info:
-      return
+    base = token.get("baseToken", {})
+    name = base.get("name", "Unknown")
+    symbol = base.get("symbol", "???")
+    price = float(token.get("priceUsd") or 0)
+    mcap = token.get("marketCap") or token.get("fdv") or 0
+    liq = token.get("liquidity", {}).get("usd", 0)
+    change = token.get("priceChange", {})
+    h1 = change.get("h1", 0)
+    h24 = change.get("h24", 0)
 
-    base_token = token_info.get("baseToken", {})
-    nazwa = base_token.get("name", "Nieznany")
-    symbol = base_token.get("symbol", "UNKNOWN")
+    # Save entry MC the first time we see this CA
+    if ca not in entry_mcs:
+        entry_mcs[ca] = mcap
 
-    cena = float(token_info.get("priceUsd", 0))
-    mcap = token_info.get("marketCap", token_info.get("fdv", 0))
-    plynnosc = token_info.get("liquidity", {}).get("usd", 0)
+    entry_mcap = entry_mcs[ca]
 
-    zmiana_ceny = token_info.get("priceChange", {})
-    h1 = zmiana_ceny.get("h1", 0)
-    h24 = zmiana_ceny.get("h24", 0)
+    # Calculate current x
+    if entry_mcap > 0:
+        multiplier = mcap / entry_mcap
+        x_text = f"**{multiplier:.2f}x**"
+    else:
+        x_text = "—"
 
-    h1_ikona = "▲" if h1 >= 0 else "▼"
-    h24_ikona = "▲" if h24 >= 0 else "▼"
+    h1_icon = "▲" if h1 >= 0 else "▼"
+    h24_icon = "▲" if h24 >= 0 else "▼"
 
-    mcap_tekst = f"${mcap:,.0f}" if mcap else "0"
-    if mcap and mcap > 1000:
-      mcap_tekst = f"${mcap / 1000:.2f}K"
-
-    liq_tekst = f"${plynnosc / 1000:.2f}K" if plynnosc else "$0"
-
-    tekst_wiadomosci = (
-        f"**{nazwa} ({symbol}) | SOLANA**\n"
-        f"┌─ Cena: ${cena:.8f}\n"
-        f"├─ MCap: {mcap_tekst}\n"
-        f"├─ Płynność: {liq_tekst}\n"
-        f"├─ 1h: {h1_ikona} {abs(h1)}% · 24h: {h24_ikona} {abs(h24)}%\n"
-        f"└─ Kontrakt: `{ca}`"
+    text = (
+        f"**{name} ({symbol}) | SOLANA**\n"
+        f"┌─ Price: `${price:.8f}`\n"
+        f"├─ MCap: **{format_number(mcap)}**\n"
+        f"├─ Liquidity: {format_number(liq)}\n"
+        f"├─ 1h: {h1_icon} {abs(h1)}% · 24h: {h24_icon} {abs(h24)}%\n"
+        f"├─ From call: {x_text}\n"
+        f"└─ CA: `{ca}`"
     )
 
-    widok = TokenView(ca)
-    await message.channel.send(tekst_wiadomosci, view=widok)
+    view = TokenView(ca, entry_mcap)
+    await message.channel.send(text, view=view)
 
-
-# Pobieranie tokena bezpiecznie z chmury Render
-TOKEN = os.environ.get("DISCORD_TOKEN")
+TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN:
-  print("BŁĄD: Brak zmiennej środowiskowej DISCORD_TOKEN!")
+    print("❌ DISCORD_TOKEN not found!")
 else:
-  client.run(TOKEN)
+    client.run(TOKEN)
