@@ -4,43 +4,35 @@ import time
 import discord
 from discord.ui import View, button
 import requests
+from collections import defaultdict
 
 intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 
 SOL_CA_REGEX = r"\b[1-9A-HJ-NP-Za-km-z]{32,44}\b"
-entry_mcs = {}
+
+# { ca: {"entry": float, "ath": float, "caller_id": int, "caller_name": str} }
+calls = {}
+
+# { user_id: [ {"ca": str, "entry": float, "ath": float} ] }
+user_stats = defaultdict(list)
 
 def get_token_data(ca: str):
     try:
-        # Cache buster so we get fresher data
         url = f"https://api.dexscreener.com/latest/dex/tokens/{ca}?t={int(time.time())}"
-        
-        headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Accept": "application/json"
-        }
-        
-        r = requests.get(url, headers=headers, timeout=6)
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=6)
         data = r.json()
         pairs = data.get("pairs")
-        
         if not pairs:
             return None
-            
-        # Sort by highest liquidity
-        pairs = sorted(
-            pairs,
-            key=lambda x: x.get("liquidity", {}).get("usd", 0),
-            reverse=True
-        )
+        pairs = sorted(pairs, key=lambda x: x.get("liquidity", {}).get("usd", 0), reverse=True)
         return pairs[0]
     except Exception as e:
         print(f"API Error: {e}")
         return None
 
-def format_number(num):
+def format_mc(num):
     if not num:
         return "$0"
     if num >= 1_000_000:
@@ -49,54 +41,76 @@ def format_number(num):
         return f"${num/1_000:.1f}K"
     return f"${num:,.0f}"
 
-def build_message(ca: str, token: dict, entry_mcap: float):
+def build_message(ca: str, token: dict, call_data: dict):
     base = token.get("baseToken", {})
     name = base.get("name", "Unknown")
     symbol = base.get("symbol", "???")
     price = float(token.get("priceUsd") or 0)
     mcap = token.get("marketCap") or token.get("fdv") or 0
     liq = token.get("liquidity", {}).get("usd", 0)
+    vol = token.get("volume", {}).get("h24", 0)
     change = token.get("priceChange", {})
     h1 = change.get("h1", 0)
     h24 = change.get("h24", 0)
 
-    if entry_mcap and entry_mcap > 0:
-        multiplier = mcap / entry_mcap
-        x_text = f"**{multiplier:.2f}x**"
-    else:
-        x_text = "—"
+    entry = call_data["entry"]
+    ath = call_data["ath"]
+    caller = call_data["caller_name"]
+
+    current_x = mcap / entry if entry > 0 else 0
+    ath_x = ath / entry if entry > 0 else 0
 
     h1_icon = "▲" if h1 >= 0 else "▼"
     h24_icon = "▲" if h24 >= 0 else "▼"
 
     text = (
         f"**{name} ({symbol}) | SOLANA**\n"
-        f"┌─ Price: `${price:.8f}`\n"
-        f"├─ MCap: **{format_number(mcap)}**\n"
-        f"├─ Liquidity: {format_number(liq)}\n"
-        f"├─ 1h: {h1_icon} {abs(h1)}% · 24h: {h24_icon} {abs(h24)}%\n"
-        f"├─ From call: {x_text}\n"
-        f"└─ CA: `{ca}`"
+        f"```\n"
+        f"Price: ${price:.8f}\n"
+        f"MCap:  {format_mc(mcap)}  →  ATH: {format_mc(ath)}\n"
+        f"Liq:   {format_mc(liq)}\n"
+        f"Vol24: {format_mc(vol)}\n"
+        f"1h: {h1_icon} {abs(h1):.1f}%   24h: {h24_icon} {abs(h24):.1f}%\n"
+        f"```\n"
+        f"From call: **{current_x:.2f}x**  |  ATH: **{ath_x:.2f}x**\n"
+        f"Called by **{caller}** @ {format_mc(entry)}\n"
+        f"`{ca}`"
     )
     return text
 
 class TokenView(View):
-    def __init__(self, ca: str, entry_mcap: float):
+    def __init__(self, ca: str):
         super().__init__(timeout=None)
         self.ca = ca
-        self.entry_mcap = entry_mcap
 
-    @button(label="🔄 Refresh", style=discord.ButtonStyle.blurple)
+    @button(label="Refresh", style=discord.ButtonStyle.blurple)
     async def refresh(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
 
-        token = get_token_data(self.ca)
-        if not token:
-            await interaction.followup.send("❌ Failed to fetch data", ephemeral=True)
+        if self.ca not in calls:
+            await interaction.followup.send("Call data lost (bot restarted)", ephemeral=True)
             return
 
-        new_text = build_message(self.ca, token, self.entry_mcap)
-        await interaction.message.edit(content=new_text, view=self)
+        token = get_token_data(self.ca)
+        if not token:
+            await interaction.followup.send("Failed to fetch data", ephemeral=True)
+            return
+
+        mcap = token.get("marketCap") or token.get("fdv") or 0
+
+        # Update ATH
+        if mcap > calls[self.ca]["ath"]:
+            calls[self.ca]["ath"] = mcap
+
+            # Also update in user_stats
+            caller_id = calls[self.ca]["caller_id"]
+            for call in user_stats[caller_id]:
+                if call["ca"] == self.ca:
+                    call["ath"] = mcap
+                    break
+
+        text = build_message(self.ca, token, calls[self.ca])
+        await interaction.message.edit(content=text, view=self)
 
 @client.event
 async def on_ready():
@@ -107,6 +121,31 @@ async def on_message(message):
     if message.author.bot:
         return
 
+    # .stats command
+    if message.content.lower() == ".stats":
+        stats = user_stats.get(message.author.id, [])
+        if not stats:
+            await message.channel.send("You have no calls yet.")
+            return
+
+        total = len(stats)
+        hit_2x = sum(1 for c in stats if c["ath"] / c["entry"] >= 2)
+        percent = (hit_2x / total) * 100 if total > 0 else 0
+
+        biggest = max((c["ath"] / c["entry"] for c in stats), default=0)
+
+        text = (
+            f"**Stats for {message.author.display_name}**\n"
+            f"```\n"
+            f"Total calls:     {total}\n"
+            f"Hit 2x+:         {hit_2x} ({percent:.1f}%)\n"
+            f"Biggest multi:   {biggest:.2f}x\n"
+            f"```"
+        )
+        await message.channel.send(text)
+        return
+
+    # Detect CA
     match = re.search(SOL_CA_REGEX, message.content)
     if not match:
         return
@@ -117,18 +156,29 @@ async def on_message(message):
         return
 
     mcap = token.get("marketCap") or token.get("fdv") or 0
+    if mcap <= 0:
+        return
 
-    if ca not in entry_mcs:
-        entry_mcs[ca] = mcap
+    # New call
+    if ca not in calls:
+        calls[ca] = {
+            "entry": mcap,
+            "ath": mcap,
+            "caller_id": message.author.id,
+            "caller_name": message.author.display_name
+        }
+        user_stats[message.author.id].append({
+            "ca": ca,
+            "entry": mcap,
+            "ath": mcap
+        })
 
-    entry_mcap = entry_mcs[ca]
-    text = build_message(ca, token, entry_mcap)
-    view = TokenView(ca, entry_mcap)
-
+    text = build_message(ca, token, calls[ca])
+    view = TokenView(ca)
     await message.channel.send(text, view=view)
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN:
-    print("❌ DISCORD_TOKEN not found!")
+    print("❌ DISCORD_TOKEN not found")
 else:
     client.run(TOKEN)
