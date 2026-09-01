@@ -1,5 +1,6 @@
 import os
 import re
+import time
 import discord
 from discord.ui import View, button
 import requests
@@ -9,19 +10,31 @@ intents.message_content = True
 client = discord.Client(intents=intents)
 
 SOL_CA_REGEX = r"\b[1-9A-HJ-NP-Za-km-z]{32,44}\b"
-
-# Saves the Market Cap when the CA was first called
 entry_mcs = {}
 
 def get_token_data(ca: str):
     try:
-        r = requests.get(f"https://api.dexscreener.com/latest/dex/tokens/{ca}", timeout=8)
+        # Cache buster so we get fresher data
+        url = f"https://api.dexscreener.com/latest/dex/tokens/{ca}?t={int(time.time())}"
+        
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/json"
+        }
+        
+        r = requests.get(url, headers=headers, timeout=6)
         data = r.json()
         pairs = data.get("pairs")
+        
         if not pairs:
             return None
-        # Take the pair with highest liquidity
-        pairs = sorted(pairs, key=lambda x: x.get("liquidity", {}).get("usd", 0), reverse=True)
+            
+        # Sort by highest liquidity
+        pairs = sorted(
+            pairs,
+            key=lambda x: x.get("liquidity", {}).get("usd", 0),
+            reverse=True
+        )
         return pairs[0]
     except Exception as e:
         print(f"API Error: {e}")
@@ -47,7 +60,6 @@ def build_message(ca: str, token: dict, entry_mcap: float):
     h1 = change.get("h1", 0)
     h24 = change.get("h24", 0)
 
-    # Calculate multiplier
     if entry_mcap and entry_mcap > 0:
         multiplier = mcap / entry_mcap
         x_text = f"**{multiplier:.2f}x**"
@@ -76,12 +88,11 @@ class TokenView(View):
 
     @button(label="🔄 Refresh", style=discord.ButtonStyle.blurple)
     async def refresh(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Show loading
         await interaction.response.defer()
 
         token = get_token_data(self.ca)
         if not token:
-            await interaction.followup.send("❌ Could not fetch new data", ephemeral=True)
+            await interaction.followup.send("❌ Failed to fetch data", ephemeral=True)
             return
 
         new_text = build_message(self.ca, token, self.entry_mcap)
@@ -107,12 +118,10 @@ async def on_message(message):
 
     mcap = token.get("marketCap") or token.get("fdv") or 0
 
-    # Save entry MC only the first time
     if ca not in entry_mcs:
         entry_mcs[ca] = mcap
 
     entry_mcap = entry_mcs[ca]
-
     text = build_message(ca, token, entry_mcap)
     view = TokenView(ca, entry_mcap)
 
