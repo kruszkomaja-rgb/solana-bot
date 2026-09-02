@@ -1,5 +1,7 @@
 import os
 import re
+import asyncio
+from datetime import datetime, timezone, timedelta
 import discord
 from discord.ui import Modal, TextInput, View, button
 from collections import defaultdict
@@ -72,6 +74,31 @@ def get_stats_embed(user_name: str, user_id: int, data_dict: dict, title_prefix:
     embed.set_footer(text=footer_text)
     return embed
 
+def get_aggregate_stats_embed(data_dict: dict, title: str, footer_text: str):
+    total_closed = 0
+    total_hits = 0
+    total_misses = 0
+
+    for user_id, records in data_dict.items():
+        closed = [c for c in records.values() if c["ath"] is not None]
+        total_closed += len(closed)
+        total_hits += sum(1 for c in closed if c["hit"])
+        total_misses += sum(1 for c in closed if not c["hit"])
+
+    accuracy = (total_hits / total_closed * 100) if total_closed > 0 else 0
+
+    embed = discord.Embed(
+        title=title,
+        color=0xFFFFFF,
+        description="Daily performance summary across all users."
+    )
+    embed.add_field(name="Total Closed", value=str(total_closed), inline=True)
+    embed.add_field(name="Good Calls (Hits)", value=str(total_hits), inline=True)
+    embed.add_field(name="Bad Calls (Misses)", value=str(total_misses), inline=True)
+    embed.add_field(name="Accuracy", value=f"**{accuracy:.1f}%**", inline=True)
+    embed.set_footer(text=footer_text)
+    return embed
+
 class NewCallModal(Modal, title="New Call"):
     ca = TextInput(label="Contract Address (CA)", placeholder="Paste CA here...", required=True, max_length=50)
     call_mc = TextInput(label="Call MC", placeholder="e.g. 25k", required=True, max_length=20)
@@ -127,6 +154,7 @@ class NewTradeModal(Modal, title="New Trade"):
     ca = TextInput(label="Contract Address (CA)", placeholder="Paste CA here...", required=True, max_length=50)
     call_mc = TextInput(label="Trade MC", placeholder="e.g. 25k", required=True, max_length=20)
     target = TextInput(label="Target (MC or x)", placeholder="e.g. 100k or 4x", required=True, max_length=20)
+    sol_amount = TextInput(label="SOL Invested", placeholder="e.g. 0.1", required=True, max_length=20)
 
     def __init__(self, target_user_id: int):
         super().__init__()
@@ -136,9 +164,16 @@ class NewTradeModal(Modal, title="New Trade"):
         ca = self.ca.value.strip()
         call_mc = parse_number(self.call_mc.value)
         target_raw = self.target.value.strip().lower()
+        sol_raw = self.sol_amount.value.strip().replace(",", "")
 
         if not call_mc:
             await interaction.response.send_message("Invalid Trade MC", ephemeral=True)
+            return
+
+        try:
+            sol_invested = float(sol_raw)
+        except ValueError:
+            await interaction.response.send_message("Invalid SOL Amount", ephemeral=True)
             return
 
         if "x" in target_raw:
@@ -159,6 +194,7 @@ class NewTradeModal(Modal, title="New Trade"):
             "call_mc": call_mc,
             "target_mc": target_mc,
             "target_x": target_x,
+            "sol_invested": sol_invested,
             "ath": None,
             "hit": False,
             "caller": interaction.user.display_name
@@ -166,7 +202,7 @@ class NewTradeModal(Modal, title="New Trade"):
 
         embed = discord.Embed(
             title="Trade Opened",
-            description=f"**CA:** `{ca}`\n**Entry:** {format_mc(call_mc)}\n**Target:** {format_mc(target_mc)} ({target_x:.2f}x)",
+            description=f"**CA:** `{ca}`\n**Entry:** {format_mc(call_mc)}\n**Target:** {format_mc(target_mc)} ({target_x:.2f}x)\n**Invested:** {sol_invested} SOL",
             color=0xFFFFFF
         )
         embed.set_footer(text="Click the button below when you have the ATH")
@@ -209,6 +245,10 @@ class ATHModal(Modal, title="Add ATH"):
             num_str = f"trade #{trade_counter:03d}"
             channel_id = TRADE_CHANNEL_ID
             title_text = "TRADE RESULT"
+            
+            sol_inv = data["sol_invested"]
+            sol_return = sol_inv * multi if data["hit"] else 0.0
+            profit_loss = sol_return - sol_inv
         else:
             call_counter += 1
             num_str = f"call #{call_counter:03d}"
@@ -221,6 +261,12 @@ class ATHModal(Modal, title="Add ATH"):
         embed.add_field(name="ATH", value=format_mc(ath), inline=True)
         embed.add_field(name="Multiple", value=f"**{multi:.2f}x**", inline=True)
         embed.add_field(name="Target", value=format_mc(data["target_mc"]), inline=True)
+        
+        if self.is_trade:
+            embed.add_field(name="Invested", value=f"{sol_inv:.4f} SOL", inline=True)
+            embed.add_field(name="Return", value=f"{sol_return:.4f} SOL", inline=True)
+            embed.add_field(name="P/L", value=f"{'+' if profit_loss >= 0 else ''}{profit_loss:.4f} SOL", inline=True)
+
         embed.add_field(name="Result", value=f"**{result}**", inline=True)
         embed.set_footer(text=f"{num_str} • Called by {data['caller']}")
 
@@ -301,9 +347,33 @@ class CallView(View):
         except discord.Forbidden:
             await interaction.response.send_message("Could not send DM. Please enable direct messages from server members.", ephemeral=True)
 
+async def daily_stats_loop():
+    await client.wait_until_ready()
+    while not client.is_closed():
+        now = datetime.now(timezone.utc)
+        target = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        if target <= now:
+            target += timedelta(days=1)
+        
+        wait_seconds = (target - now).total_seconds()
+        await asyncio.sleep(wait_seconds)
+
+        # Send to Results Channel
+        results_channel = client.get_channel(RESULTS_CHANNEL_ID)
+        if results_channel:
+            embed = get_aggregate_stats_embed(user_calls, "DAILY CALLS STATS (24H)", "Mego Calls • Daily Update")
+            await results_channel.send(embed=embed)
+
+        # Send to Trade Channel
+        trade_channel = client.get_channel(TRADE_CHANNEL_ID)
+        if trade_channel:
+            embed = get_aggregate_stats_embed(user_trades, "DAILY TRADES STATS (24H)", "Mego Trades • Daily Update")
+            await trade_channel.send(embed=embed)
+
 @client.event
 async def on_ready():
     print(f"✅ Logged in as {client.user}")
+    client.loop.create_task(daily_stats_loop())
 
 @client.event
 async def on_message(message):
