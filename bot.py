@@ -103,6 +103,7 @@ class NewCallModal(Modal, title="New Call"):
     ca = TextInput(label="Contract Address (CA)", placeholder="Paste CA here...", required=True, max_length=50)
     call_mc = TextInput(label="Call MC", placeholder="e.g. 25k", required=True, max_length=20)
     target = TextInput(label="Target (MC or x)", placeholder="e.g. 100k or 4x", required=True, max_length=20)
+    pnl_time = TextInput(label="Time until PNL result (e.g. 2h, 30m)", placeholder="e.g. 2h", required=True, max_length=20)
 
     def __init__(self, target_user_id: int):
         super().__init__()
@@ -112,6 +113,7 @@ class NewCallModal(Modal, title="New Call"):
         ca = self.ca.value.strip()
         call_mc = parse_number(self.call_mc.value)
         target_raw = self.target.value.strip().lower()
+        pnl_time_str = self.pnl_time.value.strip()
 
         if not call_mc:
             await interaction.response.send_message("Invalid Call MC", ephemeral=True)
@@ -135,6 +137,7 @@ class NewCallModal(Modal, title="New Call"):
             "call_mc": call_mc,
             "target_mc": target_mc,
             "target_x": target_x,
+            "pnl_time": pnl_time_str,
             "ath": None,
             "hit": False,
             "caller": interaction.user.display_name
@@ -142,10 +145,10 @@ class NewCallModal(Modal, title="New Call"):
 
         embed = discord.Embed(
             title="Call Opened",
-            description=f"**CA:** `{ca}`\n**Entry:** {format_mc(call_mc)}\n**Target:** {format_mc(target_mc)} ({target_x:.2f}x)",
+            description=f"**CA:** `{ca}`\n**Entry:** {format_mc(call_mc)}\n**Target:** {format_mc(target_mc)} ({target_x:.2f}x)\n**PNL Delay:** {pnl_time_str}",
             color=0xFFFFFF
         )
-        embed.set_footer(text="Click the button below when you have the ATH")
+        embed.set_footer(text="Click the buttons below when ready")
 
         view = ATHView(ca, self.target_user_id, is_trade=False)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
@@ -155,6 +158,7 @@ class NewTradeModal(Modal, title="New Trade"):
     call_mc = TextInput(label="Trade MC", placeholder="e.g. 25k", required=True, max_length=20)
     target = TextInput(label="Target (MC or x)", placeholder="e.g. 100k or 4x", required=True, max_length=20)
     sol_amount = TextInput(label="SOL Invested", placeholder="e.g. 0.1", required=True, max_length=20)
+    pnl_time = TextInput(label="Time until PNL result (e.g. 2h, 30m)", placeholder="e.g. 2h", required=True, max_length=20)
 
     def __init__(self, target_user_id: int):
         super().__init__()
@@ -165,6 +169,7 @@ class NewTradeModal(Modal, title="New Trade"):
         call_mc = parse_number(self.call_mc.value)
         target_raw = self.target.value.strip().lower()
         sol_raw = self.sol_amount.value.strip().replace(",", "")
+        pnl_time_str = self.pnl_time.value.strip()
 
         if not call_mc:
             await interaction.response.send_message("Invalid Trade MC", ephemeral=True)
@@ -195,6 +200,7 @@ class NewTradeModal(Modal, title="New Trade"):
             "target_mc": target_mc,
             "target_x": target_x,
             "sol_invested": sol_invested,
+            "pnl_time": pnl_time_str,
             "ath": None,
             "hit": False,
             "caller": interaction.user.display_name
@@ -202,10 +208,10 @@ class NewTradeModal(Modal, title="New Trade"):
 
         embed = discord.Embed(
             title="Trade Opened",
-            description=f"**CA:** `{ca}`\n**Entry:** {format_mc(call_mc)}\n**Target:** {format_mc(target_mc)} ({target_x:.2f}x)\n**Invested:** {sol_invested} SOL",
+            description=f"**CA:** `{ca}`\n**Entry:** {format_mc(call_mc)}\n**Target:** {format_mc(target_mc)} ({target_x:.2f}x)\n**Invested:** {sol_invested} SOL\n**PNL Delay:** {pnl_time_str}",
             color=0xFFFFFF
         )
-        embed.set_footer(text="Click the button below when you have the ATH")
+        embed.set_footer(text="Click the buttons below when ready")
 
         view = ATHView(ca, self.target_user_id, is_trade=True)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
@@ -236,6 +242,7 @@ class ATHModal(Modal, title="Add ATH"):
         data["ath"] = ath
         data["hit"] = ath >= data["target_mc"]
         multi = data["target_x"]
+        pnl_time_str = data.get("pnl_time", "Unknown")
 
         color = 0x00C853 if data["hit"] else 0xD32F2F
         result = "TARGET HIT" if data["hit"] else "MISSED"
@@ -268,6 +275,7 @@ class ATHModal(Modal, title="Add ATH"):
             embed.add_field(name="P/L", value=f"{'+' if profit_loss >= 0 else ''}{profit_loss:.4f} SOL", inline=True)
 
         embed.add_field(name="Result", value=f"**{result}**", inline=True)
+        embed.add_field(name="PNL Delivery Time", value=pnl_time_str, inline=False)
         embed.set_footer(text=f"{num_str} • Called by {data['caller']}")
 
         target_channel = client.get_channel(channel_id)
@@ -293,6 +301,25 @@ class ATHView(View):
             await interaction.response.send_message("Only the owner can add ATH.", ephemeral=True)
             return
         await interaction.response.send_modal(ATHModal(self.ca, self.user_id, self.is_trade))
+
+    @button(label="PNL", style=discord.ButtonStyle.green, emoji="📊")
+    async def pnl_info(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("Only the owner can view this PNL info.", ephemeral=True)
+            return
+        
+        data_dict = user_trades if self.is_trade else user_calls
+        data = data_dict[self.user_id].get(self.ca)
+        if not data:
+            await interaction.response.send_message("Call data not found.", ephemeral=True)
+            return
+        
+        pnl_time_str = data.get("pnl_time", "Not specified")
+        channel_name = "Trade Channel" if self.is_trade else "Call Result Channel"
+        await interaction.response.send_message(
+            f"⏳ PNL will be sent to the **{channel_name}** in **{pnl_time_str}**.", 
+            ephemeral=True
+        )
 
 class CallView(View):
     def __init__(self, target_user_id: int):
@@ -358,13 +385,11 @@ async def daily_stats_loop():
         wait_seconds = (target - now).total_seconds()
         await asyncio.sleep(wait_seconds)
 
-        # Send to Results Channel
         results_channel = client.get_channel(RESULTS_CHANNEL_ID)
         if results_channel:
             embed = get_aggregate_stats_embed(user_calls, "DAILY CALLS STATS (24H)", "Mego Calls • Daily Update")
             await results_channel.send(embed=embed)
 
-        # Send to Trade Channel
         trade_channel = client.get_channel(TRADE_CHANNEL_ID)
         if trade_channel:
             embed = get_aggregate_stats_embed(user_trades, "DAILY TRADES STATS (24H)", "Mego Trades • Daily Update")
@@ -382,7 +407,6 @@ async def on_message(message):
 
     content = message.content.lower().strip()
 
-    # .call USER_ID
     if content.startswith(".call"):
         parts = message.content.split()
         if len(parts) != 2 or not parts[1].isdigit():
@@ -407,7 +431,6 @@ async def on_message(message):
             pass
         return
 
-    # .stats
     if content == ".stats":
         embed = get_stats_embed(message.author.display_name, message.author.id, user_calls, "STATS", "Mego Calls")
         if not embed:
@@ -416,7 +439,6 @@ async def on_message(message):
         await message.reply(embed=embed)
         return
 
-    # .trdstats
     if content == ".trdstats":
         embed = get_stats_embed(message.author.display_name, message.author.id, user_trades, "TRADE STATS", "Mego Trades")
         if not embed:
