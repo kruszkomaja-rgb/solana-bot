@@ -51,8 +51,8 @@ def get_stats_embed(user_name: str, user_id: int):
     hits = sum(1 for c in closed if c["hit"])
     misses = total - hits
     accuracy = (hits / total * 100) if total else 0
-    biggest = max((c["ath"] / c["call_mc"] for c in closed), default=0)
-    avg_multi = sum(c["ath"] / c["call_mc"] for c in closed) / total
+    biggest = max((c["target_x"] for c in closed), default=0)
+    avg_multi = sum(c["target_x"] for c in closed) / total
 
     embed = discord.Embed(
         title=f"STATS — {user_name}",
@@ -140,7 +140,9 @@ class ATHModal(Modal, title="Add ATH"):
         data = calls[self.ca]
         data["ath"] = ath
         data["hit"] = ath >= data["target_mc"]
-        multi = ath / data["call_mc"]
+        
+        # Używamy docelowego mnożnika wynikającego z założonego celu (target_x) zamiast mnożnika z ATH
+        multi = data["target_x"]
 
         color = 0x00C853 if data["hit"] else 0xD32F2F
         result = "TARGET HIT" if data["hit"] else "MISSED"
