@@ -13,9 +13,8 @@ client = discord.Client(intents=intents)
 RESULTS_CHANNEL_ID = 1544498477701005332
 TRADE_CHANNEL_ID = 1544519128369471508
 
-# ←←← TUTAJ WKLEJ BEZPOŚREDNIE LINKI (i.imgur.com/....)
-BANNER_URL = "https://i.imgur.com/bt1F4J8.png"    # banner
-ICON_URL = "https://i.imgur.com/YvPJYPP.png"      # małe zdjęcie
+BANNER_URL = "https://i.imgur.com/bt1F4J8.png"
+ICON_URL = "https://i.imgur.com/YvPJYPP.png"
 
 user_calls = defaultdict(dict)
 user_trades = defaultdict(dict)
@@ -302,25 +301,6 @@ class ATHView(View):
             return
         await interaction.response.send_modal(ATHModal(self.ca, self.user_id, self.is_trade))
 
-    @button(label="PNL", style=discord.ButtonStyle.green, emoji="📊")
-    async def pnl_info(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("Only the owner can view this PNL info.", ephemeral=True)
-            return
-        
-        data_dict = user_trades if self.is_trade else user_calls
-        data = data_dict[self.user_id].get(self.ca)
-        if not data:
-            await interaction.response.send_message("Call data not found.", ephemeral=True)
-            return
-        
-        pnl_time_str = data.get("pnl_time", "Not specified")
-        channel_name = "Trade Channel" if self.is_trade else "Call Result Channel"
-        await interaction.response.send_message(
-            f"⏳ PNL will be sent to the **{channel_name}** in **{pnl_time_str}**.", 
-            ephemeral=True
-        )
-
 class CallView(View):
     def __init__(self, target_user_id: int):
         super().__init__(timeout=None)
@@ -375,9 +355,9 @@ class CallView(View):
             await interaction.response.send_message("Could not send DM. Please enable direct messages from server members.", ephemeral=True)
 
     @button(label="PNL", style=discord.ButtonStyle.green, emoji="⏱️")
-    async def main_pnl_info(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def main_pnl_schedule(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.target_user_id:
-            await interaction.response.send_message("Only the owner can check PNL info here.", ephemeral=True)
+            await interaction.response.send_message("Only the owner can check PNL schedules here.", ephemeral=True)
             return
         
         user_c = user_calls.get(self.target_user_id, {})
@@ -387,14 +367,14 @@ class CallView(View):
         active_trades = [t for t in user_t.values() if t["ath"] is None]
 
         if not active_calls and not active_trades:
-            await interaction.response.send_message("You have no active calls or trades currently running.", ephemeral=True)
+            await interaction.response.send_message("You have no active calls or trades waiting for PNL delivery.", ephemeral=True)
             return
 
-        msg_lines = ["**Active PNL Timers:**"]
+        msg_lines = ["**⏱️ Time until PNL gets sent to call / trade channels:**"]
         for c in active_calls:
-            msg_lines.append(f"• Call (`{c.get('target_mc')} MC target`): PNL sends in **{c.get('pnl_time')}**")
+            msg_lines.append(f"• Call (`{c.get('target_mc')} MC target`): sends in **{c.get('pnl_time')}**")
         for t in active_trades:
-            msg_lines.append(f"• Trade (`{t.get('sol_invested')} SOL`): PNL sends in **{t.get('pnl_time')}**")
+            msg_lines.append(f"• Trade (`{t.get('sol_invested')} SOL`): sends in **{t.get('pnl_time')}**")
 
         await interaction.response.send_message("\n".join(msg_lines), ephemeral=True)
 
@@ -471,7 +451,7 @@ async def on_message(message):
         await message.reply(embed=embed)
         return
 
-TOKEN = os.getenv("DISOND_TOKEN") or os.getenv("DISCORD_TOKEN")
+TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN:
     print("❌ DISCORD_TOKEN not found")
 else:
