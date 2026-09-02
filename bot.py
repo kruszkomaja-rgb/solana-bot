@@ -8,7 +8,6 @@ intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 
-# Your results channel ID
 RESULTS_CHANNEL_ID = 1544498477701005332
 
 user_calls = defaultdict(dict)
@@ -73,29 +72,25 @@ class NewCallModal(Modal, title="New Call"):
             "hit": False
         }
 
+        # Only confirm to the user (ephemeral)
+        await interaction.response.send_message(
+            f"Call opened!\nCA: `{ca}`\nCalled at: **{format_mc(call_mc)}**\nTarget: **{format_mc(target_mc)}** ({target_x:.2f}x)\n\n"
+            f"When finished, use the **Add ATH** button below.",
+            ephemeral=True
+        )
+
+        # Send a private card with Add ATH button only to the user
         embed = discord.Embed(
-            title="Call Opened",
-            color=0x57F287,
+            title="Open Call",
+            color=0x5865F2,
             description=f"**CA**\n`{ca}`"
         )
         embed.add_field(name="Called at", value=format_mc(call_mc), inline=True)
         embed.add_field(name="Target", value=f"{format_mc(target_mc)} ({target_x:.2f}x)", inline=True)
-        embed.add_field(name="Status", value="Open", inline=True)
-        embed.set_footer(text=f"Called by {interaction.user.display_name}")
+        embed.set_footer(text="Click Add ATH when the call is finished")
 
         view = ATHView(ca, interaction.user.id)
-
-        # Send to results channel
-        results_channel = client.get_channel(RESULTS_CHANNEL_ID)
-        if results_channel:
-            await results_channel.send(embed=embed, view=view)
-
-        # Clean up
-        await interaction.response.send_message("Call opened in results channel.", ephemeral=True)
-        try:
-            await interaction.message.delete()
-        except:
-            pass
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 class ATHModal(Modal, title="Add ATH"):
     def __init__(self, ca: str, user_id: int):
@@ -125,7 +120,7 @@ class ATHModal(Modal, title="Add ATH"):
         result = "TARGET HIT" if data["hit"] else "MISSED"
 
         embed = discord.Embed(
-            title="Call Closed",
+            title="Call Result",
             color=color,
             description=f"**CA**\n`{self.ca}`"
         )
@@ -135,8 +130,16 @@ class ATHModal(Modal, title="Add ATH"):
         embed.add_field(name="Result", value=f"**{result}**", inline=False)
         embed.set_footer(text=f"Called by {interaction.user.display_name}")
 
-        # Edit the original message in results channel
-        await interaction.response.edit_message(embed=embed, view=None)
+        # Send ONLY the final result to the results channel
+        results_channel = client.get_channel(RESULTS_CHANNEL_ID)
+        if results_channel:
+            await results_channel.send(embed=embed)
+
+        await interaction.response.edit_message(
+            content="Call closed and sent to results channel.",
+            embed=None,
+            view=None
+        )
 
 class ATHView(View):
     def __init__(self, ca: str, user_id: int):
@@ -173,12 +176,16 @@ async def on_message(message):
     if content == ".call":
         embed = discord.Embed(
             title="Call Tracker",
-            description="Click the button below to open a new call.",
+            description="Ready to lock in a call?\nClick the button below to start.",
             color=0x5865F2
         )
-        msg = await message.channel.send(embed=embed, view=MainView())
+        embed.set_image(url="https://media.tenor.com/7Z9zqQzqZ8IAAAAC/rocket-launch.gif")  # cool rocket gif
+        embed.set_footer(text="Track your calls • Hit your targets")
+
+        await message.channel.send(embed=embed, view=MainView())
+
         try:
-            await message.delete()  # delete the .call message
+            await message.delete()
         except:
             pass
         return
