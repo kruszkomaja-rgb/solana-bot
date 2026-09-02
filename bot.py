@@ -46,9 +46,32 @@ def format_mc(num):
         return f"${num/1_000:.1f}K"
     return f"${num:,.0f}"
 
-def get_stats_embed(user_name: str, user_id: int, data_dict: dict, title_prefix: str, footer_text: str):
+def filter_records_by_timeframe(records: dict, timeframe: str):
+    closed = []
+    now = datetime.now(timezone.utc)
+    
+    for c in records.values():
+        if c["ath"] is None:
+            continue
+        
+        closed_at = c.get("closed_at")
+        if not closed_at:
+            closed = [rec for rec in records.values() if rec["ath"] is not None]
+            break
+            
+        if timeframe == "7d" and (now - closed_at) > timedelta(days=7):
+            continue
+        elif timeframe == "30d" and (now - closed_at) > timedelta(days=30):
+            continue
+        elif timeframe == "24h" and (now - closed_at) > timedelta(hours=24):
+            continue
+            
+        closed.append(c)
+    return closed
+
+def get_stats_embed(user_name: str, user_id: int, data_dict: dict, title_prefix: str, footer_text: str, timeframe: str = "all"):
     records = data_dict.get(user_id, {})
-    closed = [c for c in records.values() if c["ath"] is not None]
+    closed = filter_records_by_timeframe(records, timeframe)
 
     if not closed:
         return None
@@ -60,8 +83,10 @@ def get_stats_embed(user_name: str, user_id: int, data_dict: dict, title_prefix:
     biggest = max((c["target_x"] for c in closed), default=0)
     avg_multi = sum(c["target_x"] for c in closed) / total
 
+    tf_label = {"24h": " (24H)", "7d": " (7D)", "30d": " (30D)"}.get(timeframe, " (All-Time)")
+
     embed = discord.Embed(
-        title=f"{title_prefix} — {user_name}",
+        title=f"{title_prefix}{tf_label} — {user_name}",
         color=0xFFFFFF
     )
     embed.add_field(name="Closed", value=str(total), inline=True)
@@ -79,7 +104,7 @@ def get_aggregate_stats_embed(data_dict: dict, title: str, footer_text: str):
     total_misses = 0
 
     for user_id, records in data_dict.items():
-        closed = [c for c in records.values() if c["ath"] is not None]
+        closed = filter_records_by_timeframe(records, "24h")
         total_closed += len(closed)
         total_hits += sum(1 for c in closed if c["hit"])
         total_misses += sum(1 for c in closed if not c["hit"])
@@ -136,6 +161,7 @@ class NewCallModal(Modal, title="New Call"):
             "target_x": target_x,
             "ath": None,
             "hit": False,
+            "closed_at": None,
             "caller": interaction.user.display_name
         }
 
@@ -196,6 +222,7 @@ class NewTradeModal(Modal, title="New Trade"):
             "sol_invested": sol_invested,
             "ath": None,
             "hit": False,
+            "closed_at": None,
             "caller": interaction.user.display_name
         }
 
@@ -234,6 +261,7 @@ class ATHModal(Modal, title="Add ATH"):
         data = calls[self.ca]
         data["ath"] = ath
         data["hit"] = ath >= data["target_mc"]
+        data["closed_at"] = datetime.now(timezone.utc)
         multi = data["target_x"]
 
         color = 0x00C853 if data["hit"] else 0xD32F2F
@@ -311,7 +339,7 @@ class CallView(View):
             await interaction.response.send_message("Only the owner can check stats here.", ephemeral=True)
             return
 
-        embed = get_stats_embed(interaction.user.display_name, self.target_user_id, user_calls, "STATS", "Mego Calls")
+        embed = get_stats_embed(interaction.user.display_name, self.target_user_id, user_calls, "STATS", "Mego Calls", timeframe="all")
         if not embed:
             await interaction.response.send_message("You have no closed calls yet.", ephemeral=True)
             return
@@ -335,7 +363,7 @@ class CallView(View):
             await interaction.response.send_message("Only the owner can check trade stats here.", ephemeral=True)
             return
 
-        embed = get_stats_embed(interaction.user.display_name, self.target_user_id, user_trades, "TRADE STATS", "Mego Trades")
+        embed = get_stats_embed(interaction.user.display_name, self.target_user_id, user_trades, "TRADE STATS", "Mego Trades", timeframe="all")
         if not embed:
             await interaction.response.send_message("You have no closed trades yet.", ephemeral=True)
             return
@@ -474,18 +502,24 @@ async def on_message(message):
             pass
         return
 
-    if content == ".stats":
-        embed = get_stats_embed(message.author.display_name, message.author.id, user_calls, "STATS", "Mego Calls")
+    if content.startswith(".stats"):
+        parts = content.split()
+        timeframe = parts[1] if len(parts) > 1 and parts[1] in ["24h", "7d", "30d", "all"] else "all"
+        
+        embed = get_stats_embed(message.author.display_name, message.author.id, user_calls, "STATS", "Mego Calls", timeframe=timeframe)
         if not embed:
-            await message.reply("You have no closed calls yet.")
+            await message.reply(f"You have no closed calls for the selected timeframe ({timeframe}).")
             return
         await message.reply(embed=embed)
         return
 
-    if content == ".trdstats":
-        embed = get_stats_embed(message.author.display_name, message.author.id, user_trades, "TRADE STATS", "Mego Trades")
+    if content.startswith(".trdstats"):
+        parts = content.split()
+        timeframe = parts[1] if len(parts) > 1 and parts[1] in ["24h", "7d", "30d", "all"] else "all"
+
+        embed = get_stats_embed(message.author.display_name, message.author.id, user_trades, "TRADE STATS", "Mego Trades", timeframe=timeframe)
         if not embed:
-            await message.reply("You have no closed trades yet.")
+            await message.reply(f"You have no closed trades for the selected timeframe ({timeframe}).")
             return
         await message.reply(embed=embed)
         return
