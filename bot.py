@@ -10,9 +10,9 @@ client = discord.Client(intents=intents)
 
 RESULTS_CHANNEL_ID = 1544498477701005332
 
-# ←←← WSTAW LINKI DO OBRAZKÓW
-BANNER_URL = "https://imgur.com/a/kB1mpGD.png"      # Mego Call Bot banner
-ICON_URL = "https://imgur.com/a/v8Rcvr2.png"          # małe zdjęcie
+# ←←← TUTAJ WKLEJ BEZPOŚREDNIE LINKI (i.imgur.com/....)
+BANNER_URL = "https://i.imgur.com/bt1F4J8.png"   # banner
+ICON_URL = "https://i.imgur.com/YvPJYPP.png"     # małe zdjęcie
 
 user_calls = defaultdict(dict)
 
@@ -146,7 +146,7 @@ class ATHView(View):
     @button(label="Add ATH", style=discord.ButtonStyle.blurple)
     async def add_ath(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message("Only the owner of this call can add ATH.", ephemeral=True)
+            await interaction.response.send_message("Only the owner can add ATH.", ephemeral=True)
             return
         await interaction.response.send_modal(ATHModal(self.ca, self.user_id))
 
@@ -155,7 +155,7 @@ class CallView(View):
         super().__init__(timeout=None)
         self.target_user_id = target_user_id
 
-    @button(label="Call", style=discord.ButtonStyle.secondary)  # ciemny / szary przycisk
+    @button(label="Call", style=discord.ButtonStyle.secondary, emoji="💰")
     async def make_call(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.target_user_id:
             await interaction.response.send_message("Only the owner can make calls here.", ephemeral=True)
@@ -171,7 +171,10 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    if message.content.lower().startswith(".call"):
+    content = message.content.lower().strip()
+
+    # .call USER_ID
+    if content.startswith(".call"):
         parts = message.content.split()
         if len(parts) != 2 or not parts[1].isdigit():
             await message.reply("Usage: `.call USER_ID`")
@@ -193,6 +196,37 @@ async def on_message(message):
             await message.delete()
         except:
             pass
+        return
+
+    # .stats
+    if content == ".stats":
+        calls = user_calls.get(message.author.id, {})
+        closed = [c for c in calls.values() if c["ath"] is not None]
+
+        if not closed:
+            await message.reply("You have no closed calls yet.")
+            return
+
+        total = len(closed)
+        hits = sum(1 for c in closed if c["hit"])
+        misses = total - hits
+        accuracy = (hits / total * 100) if total else 0
+        biggest = max((c["ath"] / c["call_mc"] for c in closed), default=0)
+        avg_multi = sum(c["ath"] / c["call_mc"] for c in closed) / total
+
+        embed = discord.Embed(
+            title=f"STATS — {message.author.display_name}",
+            color=0xFFFFFF
+        )
+        embed.add_field(name="Closed Calls", value=str(total), inline=True)
+        embed.add_field(name="Hits", value=str(hits), inline=True)
+        embed.add_field(name="Misses", value=str(misses), inline=True)
+        embed.add_field(name="Accuracy", value=f"**{accuracy:.1f}%**", inline=True)
+        embed.add_field(name="Best Multi", value=f"**{biggest:.2f}x**", inline=True)
+        embed.add_field(name="Avg Multi", value=f"{avg_multi:.2f}x", inline=True)
+        embed.set_footer(text="Mego Calls")
+
+        await message.reply(embed=embed)
         return
 
 TOKEN = os.getenv("DISCORD_TOKEN")
