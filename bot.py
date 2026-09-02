@@ -11,8 +11,8 @@ client = discord.Client(intents=intents)
 RESULTS_CHANNEL_ID = 1544498477701005332
 
 # ←←← TUTAJ WKLEJ BEZPOŚREDNIE LINKI (i.imgur.com/....)
-BANNER_URL = "https://i.imgur.com/bt1F4J8.png"   # banner
-ICON_URL = "https://i.imgur.com/YvPJYPP.png"     # małe zdjęcie
+BANNER_URL = "https://i.imgur.com/bt1F4J8.png"    # banner
+ICON_URL = "https://i.imgur.com/YvPJYPP.png"      # małe zdjęcie
 
 user_calls = defaultdict(dict)
 
@@ -39,6 +39,33 @@ def format_mc(num):
     if num >= 1_000:
         return f"${num/1_000:.1f}K"
     return f"${num:,.0f}"
+
+def get_stats_embed(user_name: str, user_id: int):
+    calls = user_calls.get(user_id, {})
+    closed = [c for c in calls.values() if c["ath"] is not None]
+
+    if not closed:
+        return None
+
+    total = len(closed)
+    hits = sum(1 for c in closed if c["hit"])
+    misses = total - hits
+    accuracy = (hits / total * 100) if total else 0
+    biggest = max((c["ath"] / c["call_mc"] for c in closed), default=0)
+    avg_multi = sum(c["ath"] / c["call_mc"] for c in closed) / total
+
+    embed = discord.Embed(
+        title=f"STATS — {user_name}",
+        color=0xFFFFFF
+    )
+    embed.add_field(name="Closed Calls", value=str(total), inline=True)
+    embed.add_field(name="Hits", value=str(hits), inline=True)
+    embed.add_field(name="Misses", value=str(misses), inline=True)
+    embed.add_field(name="Accuracy", value=f"**{accuracy:.1f}%**", inline=True)
+    embed.add_field(name="Best Multi", value=f"**{biggest:.2f}x**", inline=True)
+    embed.add_field(name="Avg Multi", value=f"{avg_multi:.2f}x", inline=True)
+    embed.set_footer(text="Mego Calls")
+    return embed
 
 class NewCallModal(Modal, title="New Call"):
     ca = TextInput(label="Contract Address (CA)", placeholder="Paste CA here...", required=True, max_length=50)
@@ -155,12 +182,29 @@ class CallView(View):
         super().__init__(timeout=None)
         self.target_user_id = target_user_id
 
-    @button(label="Call", style=discord.ButtonStyle.secondary, emoji="💰")
+    @button(label="Call", style=discord.ButtonStyle.secondary, emoji="💸")
     async def make_call(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.target_user_id:
             await interaction.response.send_message("Only the owner can make calls here.", ephemeral=True)
             return
         await interaction.response.send_modal(NewCallModal(self.target_user_id))
+
+    @button(label="Stats", style=discord.ButtonStyle.primary, emoji="📊")
+    async def view_stats(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.target_user_id:
+            await interaction.response.send_message("Only the owner can check stats here.", ephemeral=True)
+            return
+
+        embed = get_stats_embed(interaction.user.display_name, self.target_user_id)
+        if not embed:
+            await interaction.response.send_message("You have no closed calls yet.", ephemeral=True)
+            return
+
+        try:
+            await interaction.user.send(embed=embed)
+            await interaction.response.send_message("Sent your stats to your DMs!", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.response.send_message("Could not send DM. Please enable direct messages from server members.", ephemeral=True)
 
 @client.event
 async def on_ready():
@@ -200,32 +244,10 @@ async def on_message(message):
 
     # .stats
     if content == ".stats":
-        calls = user_calls.get(message.author.id, {})
-        closed = [c for c in calls.values() if c["ath"] is not None]
-
-        if not closed:
+        embed = get_stats_embed(message.author.display_name, message.author.id)
+        if not embed:
             await message.reply("You have no closed calls yet.")
             return
-
-        total = len(closed)
-        hits = sum(1 for c in closed if c["hit"])
-        misses = total - hits
-        accuracy = (hits / total * 100) if total else 0
-        biggest = max((c["ath"] / c["call_mc"] for c in closed), default=0)
-        avg_multi = sum(c["ath"] / c["call_mc"] for c in closed) / total
-
-        embed = discord.Embed(
-            title=f"STATS — {message.author.display_name}",
-            color=0xFFFFFF
-        )
-        embed.add_field(name="Closed Calls", value=str(total), inline=True)
-        embed.add_field(name="Hits", value=str(hits), inline=True)
-        embed.add_field(name="Misses", value=str(misses), inline=True)
-        embed.add_field(name="Accuracy", value=f"**{accuracy:.1f}%**", inline=True)
-        embed.add_field(name="Best Multi", value=f"**{biggest:.2f}x**", inline=True)
-        embed.add_field(name="Avg Multi", value=f"{avg_multi:.2f}x", inline=True)
-        embed.set_footer(text="Mego Calls")
-
         await message.reply(embed=embed)
         return
 
