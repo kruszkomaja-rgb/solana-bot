@@ -8,7 +8,10 @@ intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 
-user_calls = defaultdict(dict)  # {user_id: {ca: data}}
+# Your results channel ID
+RESULTS_CHANNEL_ID = 1544498477701005332
+
+user_calls = defaultdict(dict)
 
 def parse_number(text: str):
     if not text:
@@ -81,7 +84,18 @@ class NewCallModal(Modal, title="New Call"):
         embed.set_footer(text=f"Called by {interaction.user.display_name}")
 
         view = ATHView(ca, interaction.user.id)
-        await interaction.response.send_message(embed=embed, view=view)
+
+        # Send to results channel
+        results_channel = client.get_channel(RESULTS_CHANNEL_ID)
+        if results_channel:
+            await results_channel.send(embed=embed, view=view)
+
+        # Clean up
+        await interaction.response.send_message("Call opened in results channel.", ephemeral=True)
+        try:
+            await interaction.message.delete()
+        except:
+            pass
 
 class ATHModal(Modal, title="Add ATH"):
     def __init__(self, ca: str, user_id: int):
@@ -121,6 +135,7 @@ class ATHModal(Modal, title="Add ATH"):
         embed.add_field(name="Result", value=f"**{result}**", inline=False)
         embed.set_footer(text=f"Called by {interaction.user.display_name}")
 
+        # Edit the original message in results channel
         await interaction.response.edit_message(embed=embed, view=None)
 
 class ATHView(View):
@@ -161,7 +176,11 @@ async def on_message(message):
             description="Click the button below to open a new call.",
             color=0x5865F2
         )
-        await message.channel.send(embed=embed, view=MainView())
+        msg = await message.channel.send(embed=embed, view=MainView())
+        try:
+            await message.delete()  # delete the .call message
+        except:
+            pass
         return
 
     if content == ".stats":
@@ -184,8 +203,8 @@ async def on_message(message):
             color=0x5865F2
         )
         embed.add_field(name="Total Closed", value=str(total), inline=True)
-        embed.add_field(name="Good Calls", value=f"{hits}", inline=True)
-        embed.add_field(name="Bad Calls", value=f"{misses}", inline=True)
+        embed.add_field(name="Good Calls", value=str(hits), inline=True)
+        embed.add_field(name="Bad Calls", value=str(misses), inline=True)
         embed.add_field(name="Accuracy", value=f"**{accuracy:.1f}%**", inline=True)
         embed.add_field(name="Biggest Multi", value=f"**{biggest:.2f}x**", inline=True)
         embed.add_field(name="Average Multi", value=f"{avg_multi:.2f}x", inline=True)
