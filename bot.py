@@ -8,9 +8,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 
-# Storage
-# {user_id: {ca: call_data}}
-user_calls = defaultdict(dict)
+user_calls = defaultdict(dict)  # {user_id: {ca: data}}
 
 def parse_number(text: str):
     if not text:
@@ -37,9 +35,9 @@ def format_mc(num):
     return f"${num:,.0f}"
 
 class NewCallModal(Modal, title="New Call"):
-    ca = TextInput(label="Contract Address (CA)", placeholder="Paste CA here", required=True, max_length=50)
-    call_mc = TextInput(label="Call MC", placeholder="Example: 25k", required=True, max_length=20)
-    target = TextInput(label="Target (MC or x)", placeholder="Example: 100k or 4x", required=True, max_length=20)
+    ca = TextInput(label="Contract Address", placeholder="Paste CA here...", required=True, max_length=50)
+    call_mc = TextInput(label="Call Market Cap", placeholder="e.g. 25k or 25000", required=True, max_length=20)
+    target = TextInput(label="Target (MC or x)", placeholder="e.g. 100k or 4x", required=True, max_length=20)
 
     async def on_submit(self, interaction: discord.Interaction):
         ca = self.ca.value.strip()
@@ -68,72 +66,83 @@ class NewCallModal(Modal, title="New Call"):
             "call_mc": call_mc,
             "target_mc": target_mc,
             "target_x": target_x,
-            "ath": None,          # not closed yet
-            "hit_target": False
+            "ath": None,
+            "hit": False
         }
 
-        text = (
-            f"**Call Opened**\n"
-            f"```\n"
-            f"CA:     {ca}\n"
-            f"Called: {format_mc(call_mc)}\n"
-            f"Target: {format_mc(target_mc)} ({target_x:.2f}x)\n"
-            f"```\n"
-            f"When finished, click **Add ATH** and enter the ATH."
+        embed = discord.Embed(
+            title="Call Opened",
+            color=0x57F287,
+            description=f"**CA**\n`{ca}`"
         )
-        await interaction.response.send_message(text)
+        embed.add_field(name="Called at", value=format_mc(call_mc), inline=True)
+        embed.add_field(name="Target", value=f"{format_mc(target_mc)} ({target_x:.2f}x)", inline=True)
+        embed.add_field(name="Status", value="Open", inline=True)
+        embed.set_footer(text=f"Called by {interaction.user.display_name}")
 
-class AddATHModal(Modal, title="Add ATH"):
-    ca = TextInput(label="Contract Address (CA)", placeholder="Paste the same CA", required=True, max_length=50)
-    ath = TextInput(label="ATH Market Cap", placeholder="Example: 87k", required=True, max_length=20)
+        view = ATHView(ca, interaction.user.id)
+        await interaction.response.send_message(embed=embed, view=view)
+
+class ATHModal(Modal, title="Add ATH"):
+    def __init__(self, ca: str, user_id: int):
+        super().__init__()
+        self.ca = ca
+        self.user_id = user_id
+        self.ath_input = TextInput(label="ATH Market Cap", placeholder="e.g. 87k", required=True, max_length=20)
+        self.add_item(self.ath_input)
 
     async def on_submit(self, interaction: discord.Interaction):
-        ca = self.ca.value.strip()
-        ath = parse_number(self.ath.value)
-
+        ath = parse_number(self.ath_input.value)
         if not ath:
             await interaction.response.send_message("Invalid ATH", ephemeral=True)
             return
 
-        calls = user_calls[interaction.user.id]
-
-        if ca not in calls:
-            await interaction.response.send_message("You don't have an open call with this CA.", ephemeral=True)
+        calls = user_calls[self.user_id]
+        if self.ca not in calls or calls[self.ca]["ath"] is not None:
+            await interaction.response.send_message("This call is already closed or doesn't exist.", ephemeral=True)
             return
 
-        if calls[ca]["ath"] is not None:
-            await interaction.response.send_message("This call is already closed.", ephemeral=True)
-            return
+        data = calls[self.ca]
+        data["ath"] = ath
+        data["hit"] = ath >= data["target_mc"]
+        multi = ath / data["call_mc"]
 
-        calls[ca]["ath"] = ath
-        calls[ca]["hit_target"] = ath >= calls[ca]["target_mc"]
-        multi = ath / calls[ca]["call_mc"]
+        color = 0x57F287 if data["hit"] else 0xED4245
+        result = "TARGET HIT" if data["hit"] else "MISSED"
 
-        status = "HIT TARGET" if calls[ca]["hit_target"] else "Missed"
-
-        text = (
-            f"**Call Closed**\n"
-            f"```\n"
-            f"CA:     {ca}\n"
-            f"Called: {format_mc(calls[ca]['call_mc'])}\n"
-            f"ATH:    {format_mc(ath)} ({multi:.2f}x)\n"
-            f"Target: {format_mc(calls[ca]['target_mc'])}\n"
-            f"Result: {status}\n"
-            f"```"
+        embed = discord.Embed(
+            title="Call Closed",
+            color=color,
+            description=f"**CA**\n`{self.ca}`"
         )
-        await interaction.response.send_message(text)
+        embed.add_field(name="Called at", value=format_mc(data["call_mc"]), inline=True)
+        embed.add_field(name="ATH", value=f"{format_mc(ath)} ({multi:.2f}x)", inline=True)
+        embed.add_field(name="Target", value=format_mc(data["target_mc"]), inline=True)
+        embed.add_field(name="Result", value=f"**{result}**", inline=False)
+        embed.set_footer(text=f"Called by {interaction.user.display_name}")
+
+        await interaction.response.edit_message(embed=embed, view=None)
+
+class ATHView(View):
+    def __init__(self, ca: str, user_id: int):
+        super().__init__(timeout=None)
+        self.ca = ca
+        self.user_id = user_id
+
+    @button(label="Add ATH", style=discord.ButtonStyle.blurple)
+    async def add_ath(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("This is not your call.", ephemeral=True)
+            return
+        await interaction.response.send_modal(ATHModal(self.ca, self.user_id))
 
 class MainView(View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @button(label="New Call", style=discord.ButtonStyle.green)
+    @button(label="New Call", style=discord.ButtonStyle.green, emoji="📞")
     async def new_call(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(NewCallModal())
-
-    @button(label="Add ATH", style=discord.ButtonStyle.blurple)
-    async def add_ath(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(AddATHModal())
 
 @client.event
 async def on_ready():
@@ -147,7 +156,12 @@ async def on_message(message):
     content = message.content.lower().strip()
 
     if content == ".call":
-        await message.channel.send("**Call Tracker**", view=MainView())
+        embed = discord.Embed(
+            title="Call Tracker",
+            description="Click the button below to open a new call.",
+            color=0x5865F2
+        )
+        await message.channel.send(embed=embed, view=MainView())
         return
 
     if content == ".stats":
@@ -159,19 +173,24 @@ async def on_message(message):
             return
 
         total = len(closed)
-        hits = sum(1 for c in closed if c["hit_target"])
-        percent = (hits / total * 100) if total else 0
+        hits = sum(1 for c in closed if c["hit"])
+        misses = total - hits
+        accuracy = (hits / total * 100) if total else 0
         biggest = max((c["ath"] / c["call_mc"] for c in closed), default=0)
+        avg_multi = sum(c["ath"] / c["call_mc"] for c in closed) / total
 
-        text = (
-            f"**Stats for {message.author.display_name}**\n"
-            f"```\n"
-            f"Closed calls:    {total}\n"
-            f"Hit target:      {hits} ({percent:.1f}%)\n"
-            f"Biggest multi:   {biggest:.2f}x\n"
-            f"```"
+        embed = discord.Embed(
+            title=f"Stats — {message.author.display_name}",
+            color=0x5865F2
         )
-        await message.reply(text)
+        embed.add_field(name="Total Closed", value=str(total), inline=True)
+        embed.add_field(name="Good Calls", value=f"{hits}", inline=True)
+        embed.add_field(name="Bad Calls", value=f"{misses}", inline=True)
+        embed.add_field(name="Accuracy", value=f"**{accuracy:.1f}%**", inline=True)
+        embed.add_field(name="Biggest Multi", value=f"**{biggest:.2f}x**", inline=True)
+        embed.add_field(name="Average Multi", value=f"{avg_multi:.2f}x", inline=True)
+
+        await message.reply(embed=embed)
         return
 
 TOKEN = os.getenv("DISCORD_TOKEN")
