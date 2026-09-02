@@ -374,6 +374,30 @@ class CallView(View):
         except discord.Forbidden:
             await interaction.response.send_message("Could not send DM. Please enable direct messages from server members.", ephemeral=True)
 
+    @button(label="PNL", style=discord.ButtonStyle.green, emoji="⏱️")
+    async def main_pnl_info(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.target_user_id:
+            await interaction.response.send_message("Only the owner can check PNL info here.", ephemeral=True)
+            return
+        
+        user_c = user_calls.get(self.target_user_id, {})
+        user_t = user_trades.get(self.target_user_id, {})
+        
+        active_calls = [c for c in user_c.values() if c["ath"] is None]
+        active_trades = [t for t in user_t.values() if t["ath"] is None]
+
+        if not active_calls and not active_trades:
+            await interaction.response.send_message("You have no active calls or trades currently running.", ephemeral=True)
+            return
+
+        msg_lines = ["**Active PNL Timers:**"]
+        for c in active_calls:
+            msg_lines.append(f"• Call (`{c.get('target_mc')} MC target`): PNL sends in **{c.get('pnl_time')}**")
+        for t in active_trades:
+            msg_lines.append(f"• Trade (`{t.get('sol_invested')} SOL`): PNL sends in **{t.get('pnl_time')}**")
+
+        await interaction.response.send_message("\n".join(msg_lines), ephemeral=True)
+
 async def daily_stats_loop():
     await client.wait_until_ready()
     while not client.is_closed():
@@ -447,7 +471,7 @@ async def on_message(message):
         await message.reply(embed=embed)
         return
 
-TOKEN = os.getenv("DISCORD_TOKEN")
+TOKEN = os.getenv("DISOND_TOKEN") or os.getenv("DISCORD_TOKEN")
 if not TOKEN:
     print("❌ DISCORD_TOKEN not found")
 else:
