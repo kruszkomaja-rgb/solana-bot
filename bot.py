@@ -10,9 +10,9 @@ client = discord.Client(intents=intents)
 
 RESULTS_CHANNEL_ID = 1544498477701005332
 
-# ←←← PUT YOUR IMAGE LINKS HERE
-BANNER_URL = "https://files.catbox.moe/bsg3y4.png"      # Mego Call Bot banner
-ICON_URL = "https://files.catbox.moe/w1gw0k.png"          # small profile picture
+# ←←← WSTAW LINKI DO OBRAZKÓW
+BANNER_URL = "https://imgur.com/a/kB1mpGD.png"      # Mego Call Bot banner
+ICON_URL = "https://imgur.com/a/v8Rcvr2.png"          # małe zdjęcie
 
 user_calls = defaultdict(dict)
 
@@ -81,7 +81,6 @@ class NewCallModal(Modal, title="New Call"):
             "caller": interaction.user.display_name
         }
 
-        # Private message with ATH button
         embed = discord.Embed(
             title="Call Opened",
             description=f"**CA:** `{ca}`\n**Entry:** {format_mc(call_mc)}\n**Target:** {format_mc(target_mc)} ({target_x:.2f}x)",
@@ -146,6 +145,9 @@ class ATHView(View):
 
     @button(label="Add ATH", style=discord.ButtonStyle.blurple)
     async def add_ath(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("Only the owner of this call can add ATH.", ephemeral=True)
+            return
         await interaction.response.send_modal(ATHModal(self.ca, self.user_id))
 
 class CallView(View):
@@ -153,8 +155,11 @@ class CallView(View):
         super().__init__(timeout=None)
         self.target_user_id = target_user_id
 
-    @button(label="Call", style=discord.ButtonStyle.green)
+    @button(label="Call", style=discord.ButtonStyle.secondary)  # ciemny / szary przycisk
     async def make_call(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.target_user_id:
+            await interaction.response.send_message("Only the owner can make calls here.", ephemeral=True)
+            return
         await interaction.response.send_modal(NewCallModal(self.target_user_id))
 
 @client.event
@@ -174,10 +179,13 @@ async def on_message(message):
 
         target_id = int(parts[1])
 
-        embed = discord.Embed(color=0xFFFFFF)
+        embed = discord.Embed(
+            color=0xFFFFFF,
+            description="**Only the owner of this call panel can make calls here.**"
+        )
         embed.set_image(url=BANNER_URL)
         embed.set_thumbnail(url=ICON_URL)
-        embed.set_footer(text="Mego Calls")
+        embed.set_footer(text="Mego Calls • Restricted Access")
 
         await message.channel.send(embed=embed, view=CallView(target_id))
 
@@ -185,11 +193,6 @@ async def on_message(message):
             await message.delete()
         except:
             pass
-        return
-
-    if message.content.lower() == ".stats":
-        # keep the previous stats code if you want
-        await message.reply("Stats command coming soon / keep previous version")
         return
 
 TOKEN = os.getenv("DISCORD_TOKEN")
